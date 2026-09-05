@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Agent Tracer — watch your agents talk to each other</title>
+<meta name="description" content="Drop a log file. See your AI agents talk, and see the gates that refuse. One HTML file, no build step, no dependencies."/>
+<style>
+:root{
+  --ground:#020817; --surface:#0f172a; --panel:#1e293b; --line:#1e293b;
+  --ink:#e2e8f0; --muted:#94a3b8; --faint:#64748b; --accent:#3b82f6;
+  --good:#35B36A; --warn:#E0A44C; --crit:#E06055;
+  --mono:ui-monospace,"Cascadia Code",Consolas,monospace;
+  --sans:system-ui,"Segoe UI",Roboto,-apple-system,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);line-height:1.5}
+header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:14px 18px;
+  background:var(--surface);border-bottom:1px solid var(--line)}
+h1{font-size:17px;margin:0;font-weight:650}
+.sub{font-size:12.5px;color:var(--muted);margin-top:2px}
+.spacer{flex:1}
+button,label.btn{font-family:var(--mono);font-size:11.5px;cursor:pointer;background:var(--panel);
+  color:var(--muted);border:1px solid var(--line);border-radius:8px;padding:7px 12px}
+button:hover,label.btn:hover{color:var(--ink);border-color:var(--accent)}
+button.on{background:rgba(59,130,246,.14);color:var(--accent);border-color:var(--accent)}
+#board{position:relative;height:calc(100vh - 210px);min-height:340px;overflow:hidden}
+canvas{display:block;width:100%;height:100%}
+#panel{position:absolute;top:12px;right:12px;width:290px;max-height:calc(100% - 24px);overflow:auto;
+  background:rgba(15,23,42,.94);border:1px solid var(--line);border-radius:12px;padding:14px 16px;font-size:12.5px}
+#panel h2{font-size:12px;margin:0 0 8px;text-transform:uppercase;letter-spacing:1px;color:var(--muted)}
+.word{margin:6px 0}
+.word b{font-family:var(--mono);font-size:11px;color:var(--accent)}
+.gate{display:flex;gap:8px;align-items:baseline;margin:7px 0;padding:7px 9px;border-radius:8px;background:var(--panel)}
+.dot{width:9px;height:9px;border-radius:50%;flex:none;margin-top:4px}
+.dot.ok{background:var(--good)} .dot.no{background:var(--crit)} .dot.wait{background:var(--faint)}
+.why{color:var(--muted);font-size:11.5px}
+#log{height:150px;overflow:auto;border-top:1px solid var(--line);background:var(--surface);font-family:var(--mono);font-size:11.5px}
+#log table{width:100%;border-collapse:collapse}
+#log td{padding:5px 10px;border-bottom:1px solid rgba(30,41,59,.7);white-space:nowrap}
+#log tr:hover{background:var(--panel);cursor:pointer}
+#log tr.sel{background:rgba(59,130,246,.14)}
+.tag{font-size:10px;padding:1px 7px;border-radius:20px;font-family:var(--mono)}
+.tag.no{background:rgba(224,96,85,.15);color:var(--crit)}
+.tag.ok{background:rgba(53,179,106,.15);color:var(--good)}
+.tag.go{background:rgba(59,130,246,.14);color:var(--accent)}
+footer{padding:9px 18px;font-size:11.5px;color:var(--faint);border-top:1px solid var(--line);
+  display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+footer a{color:var(--muted)}
+#drop{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+  background:rgba(2,8,23,.86);border:2px dashed var(--accent);font-size:15px;color:var(--accent)}
+#drop.show{display:flex}
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Agent Tracer</h1>
+    <div class="sub">Drop a log file. Watch your agents talk — and watch the gates that refuse.</div>
+  </div>
+  <div class="spacer"></div>
+  <button id="play" class="on">Pause</button>
+  <button id="step">Step</button>
+  <button id="reset">Restart</button>
+  <label class="btn" for="file">Open my log…</label>
+  <input id="file" type="file" accept=".json,.jsonl,.log" hidden/>
+</header>
+
+<div id="board">
+  <canvas id="cv"></canvas>
+  <div id="panel">
+    <h2>The open envelope</h2>
+    <div id="open">Click a row below, or press Step.</div>
+    <h2 style="margin-top:16px">Words the tower allows</h2>
+    <div class="word"><b>ASK</b> — I ask you to do something</div>
+    <div class="word"><b>READBACK</b> — understood, I repeat your order</div>
+    <div class="word"><b>RUN</b> — I am doing it</div>
+    <div class="word"><b>DONE</b> — finished, here is the proof</div>
+    <div class="word"><b>REFUSE</b> — I will not, here is why</div>
+    <div class="word"><b>BLOCKED</b> — I cannot continue, here is what blocks me</div>
+    <div class="word"><b>DUNNO</b> — I do not know, and here is what would settle it</div>
+  </div>
+  <div id="drop">Drop your log file here</div>
+</div>
+
+<div id="log"><table id="rows"></table></div>
+
+<footer>
+  <span>One HTML file. No build step. No dependencies. Works offline.</span>
+  <span class="spacer"></span>
+  <span>Apache 2.0</span>
+  <a href="https://github.com/fotsopatrick/agent-tracer">Source</a>
+</footer>
+
+<script>
+// ── The demo data. Replaced the moment you open your own log. ────────
+// A gate that never refused guards nothing. So the demo shows refusals.
+const DEMO = {
+  agents: ["watchtower","clark","lois","victor","jimmy","martha","raphael"],
+  messages: [
+    {from:"watchtower", to:"clark",  verb:"ASK",      subject:"publish the new article"},
+    {from:"clark",  to:"watchtower", verb:"READBACK", subject:"understood: publish the article, after the checks"},
+    {from:"clark",  to:"jimmy",      verb:"ASK",      subject:"run the tests first"},
+    {from:"jimmy",  to:"clark",      verb:"DONE",     subject:"9 tests green, 0 red"},
+    {from:"clark",  to:"victor",     verb:"ASK",      subject:"security pass on the page"},
+    {from:"victor", to:"clark",      verb:"REFUSE",   subject:"the text shows the name of the tool that builds the robot",
+     why:"Naming the build tool is off limits. Say the method, not the machinery."},
+    {from:"clark",  to:"watchtower", verb:"BLOCKED",  subject:"gate said no, waiting for a fix"},
+    {from:"watchtower", to:"clark",  verb:"ASK",      subject:"remove the tool name, keep the method"},
+    {from:"clark",  to:"victor",     verb:"ASK",      subject:"second security pass"},
+    {from:"victor", to:"clark",      verb:"REFUSE",   subject:"the page shows one real word from the secret filter list",
+     why:"It says the words must stay secret, then shows one. That hands out the recipe to fool the filter."},
+    {from:"clark",  to:"lois",       verb:"ASK",      subject:"replace it with a made-up example"},
+    {from:"lois",   to:"clark",      verb:"DONE",     subject:"example replaced, meaning kept"},
+    {from:"clark",  to:"victor",     verb:"ASK",      subject:"third security pass"},
+    {from:"victor", to:"clark",      verb:"DONE",     subject:"approved — method public, secrets inside"},
+    {from:"clark",  to:"martha",     verb:"ASK",      subject:"final approval to publish"},
+    {from:"martha", to:"clark",      verb:"DONE",     subject:"approved"},
+    {from:"clark",  to:"watchtower", verb:"DONE",     subject:"published, live, checks green"},
+    {from:"raphael",to:"clark",      verb:"DUNNO",    subject:"which locale for the twin page?",
+     why:"Two answers are possible and I will not guess. The site config would settle it."}
+  ]
+};
+
+const REFUSING = new Set(["REFUSE","BLOCKED","DUNNO"]);
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+let data = DEMO, nodes = new Map(), links = [], step = -1, playing = true, packets = [];
+
+function layout() {
+  const w = cv.width / devicePixelRatio, h = cv.height / devicePixelRatio;
+  nodes = new Map();
+  const list = data.agents, n = list.length;
+  const cols = Math.ceil(Math.sqrt(n)), rows = Math.ceil(n / cols);
+  list.forEach((name, i) => {
+    const c = i % cols, r = Math.floor(i / cols);
+    nodes.set(name, {
+      name,
+      x: (w * 0.18) + c * (w * 0.64 / Math.max(1, cols - 1)),
+      y: (h * 0.22) + r * (h * 0.56 / Math.max(1, rows - 1)),
+      sent: 0, refused: 0
+    });
+  });
+  const vus = new Set(); links = [];
+  for (const m of data.messages) {
+    const k = [m.from, m.to].sort().join("→");
+    if (!vus.has(k) && nodes.has(m.from) && nodes.has(m.to)) { vus.add(k); links.push([m.from, m.to]); }
+    if (nodes.has(m.from)) {
+      nodes.get(m.from).sent++;
+      if (REFUSING.has(m.verb)) nodes.get(m.from).refused++;
+    }
+  }
+}
+
+function taille() {
+  const r = cv.getBoundingClientRect();
+  cv.width = r.width * devicePixelRatio; cv.height = r.height * devicePixelRatio;
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  layout();
+}
+
+function appareil(x, y, node, actif) {
+  const w = 46, h = 26;
+  ctx.fillStyle = actif ? "#1d4ed8" : "#1e293b";
+  ctx.strokeStyle = actif ? "#60a5fa" : "#334155";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.ellipse(x, y - h/2, w/2, 7, 0, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+  ctx.fillRect(x - w/2, y - h/2, w, h);
+  ctx.strokeRect(x - w/2, y - h/2, w, h);
+  ctx.beginPath(); ctx.ellipse(x, y + h/2, w/2, 7, 0, 0, Math.PI); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = actif ? "#93c5fd" : "#64748b";
+  ctx.beginPath();
+  ctx.moveTo(x - 9, y - 3); ctx.lineTo(x + 9, y - 3);
+  ctx.moveTo(x + 5, y - 7); ctx.lineTo(x + 9, y - 3); ctx.lineTo(x + 5, y + 1);
+  ctx.moveTo(x + 9, y + 5); ctx.lineTo(x - 9, y + 5);
+  ctx.moveTo(x - 5, y + 1); ctx.lineTo(x - 9, y + 5); ctx.lineTo(x - 5, y + 9);
+  ctx.stroke();
+  ctx.fillStyle = "#e2e8f0"; ctx.font = "12px system-ui"; ctx.textAlign = "center";
+  ctx.fillText(node.name, x, y + 34);
+  ctx.font = "10px ui-monospace";
+  ctx.fillStyle = node.refused ? "#E06055" : "#64748b";
+  ctx.fillText(node.sent + " sent · " + node.refused + " refused", x, y + 47);
+}
+
+function dessiner() {
+  const w = cv.width / devicePixelRatio, h = cv.height / devicePixelRatio;
+  ctx.clearRect(0, 0, w, h);
+  ctx.strokeStyle = "rgba(226,232,240,.05)"; ctx.lineWidth = 1;
+  for (let x = 0; x < w; x += 40) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke(); }
+  for (let y = 0; y < h; y += 40) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); }
+  ctx.strokeStyle = "#1e293b"; ctx.lineWidth = 2;
+  for (const [a, b] of links) {
+    const A = nodes.get(a), B = nodes.get(b);
+    if (!A || !B) continue;
+    ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
+  }
+  const m = data.messages[step];
+  for (const [name, node] of nodes) appareil(node.x, node.y, node, m && (m.from === name || m.to === name));
+  for (const p of packets) {
+    const A = nodes.get(p.from), B = nodes.get(p.to);
+    if (!A || !B) continue;
+    const x = A.x + (B.x - A.x) * p.t, y = A.y + (B.y - A.y) * p.t;
+    ctx.fillStyle = p.refuse ? "#E06055" : "#35B36A";
+    ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 14;
+    ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI*2); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = "#e2e8f0"; ctx.font = "10px ui-monospace"; ctx.textAlign = "center";
+    ctx.fillText(p.verb, x, y - 12);
+  }
+}
+
+function ouvrir(i) {
+  const m = data.messages[i]; if (!m) return;
+  const refuse = REFUSING.has(m.verb);
+  document.getElementById("open").innerHTML =
+    '<div class="gate"><span class="dot ' + (refuse ? "no" : "ok") + '"></span><div>' +
+    '<b>' + esc(m.from) + '</b> → <b>' + esc(m.to) + '</b><br/>' +
+    '<span class="tag ' + (refuse ? "no" : "ok") + '">' + esc(m.verb) + '</span><br/>' +
+    esc(m.subject || "") +
+    (m.why ? '<div class="why" style="margin-top:6px"><b>why:</b> ' + esc(m.why) + '</div>' : '') +
+    '</div></div>';
+  [...document.querySelectorAll("#rows tr")].forEach((tr, k) => tr.classList.toggle("sel", k === i));
+  const tr = document.querySelectorAll("#rows tr")[i];
+  if (tr) tr.scrollIntoView({block:"nearest"});
+}
+
+const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function table() {
+  document.getElementById("rows").innerHTML = data.messages.map((m, i) => {
+    const refuse = REFUSING.has(m.verb);
+    const cls = refuse ? "no" : (m.verb === "ASK" ? "go" : "ok");
+    return '<tr data-i="' + i + '"><td style="color:#64748b">' + (i+1) + '</td>' +
+           '<td>' + esc(m.from) + '</td><td style="color:#64748b">→</td><td>' + esc(m.to) + '</td>' +
+           '<td><span class="tag ' + cls + '">' + esc(m.verb) + '</span></td>' +
+           '<td style="color:#94a3b8;white-space:normal">' + esc(m.subject || "") + '</td></tr>';
+  }).join("");
+  document.querySelectorAll("#rows tr").forEach(tr =>
+    tr.onclick = () => { step = +tr.dataset.i; lancer(); ouvrir(step); });
+}
+
+function lancer() {
+  const m = data.messages[step]; if (!m) return;
+  packets = [{ from: m.from, to: m.to, verb: m.verb, refuse: REFUSING.has(m.verb), t: 0 }];
+}
+
+function avancer() {
+  step = (step + 1) % data.messages.length;
+  lancer(); ouvrir(step);
+}
+
+let dernier = 0, cumul = 0;
+function boucle(ts) {
+  const dt = Math.min(64, ts - dernier); dernier = ts;
+  for (const p of packets) p.t = Math.min(1, p.t + dt / 900);
+  packets = packets.filter(p => p.t < 1);
+  if (playing) { cumul += dt; if (cumul > 1400) { cumul = 0; avancer(); } }
+  dessiner();
+  requestAnimationFrame(boucle);
+}
+
+// ── Reading YOUR log ────────────────────────────────────────────────
+// Two shapes are accepted, and nothing is invented if a field is absent.
+//   { "agents": [...], "messages": [ {from,to,verb,subject,why} ] }
+//   one JSON object per line (.jsonl), same fields
+function avaler(texte) {
+  let d;
+  try { d = JSON.parse(texte); }
+  catch (e) {
+    const lignes = texte.split("\n").map(l => l.trim()).filter(Boolean);
+    const msgs = [];
+    for (const l of lignes) { try { msgs.push(JSON.parse(l)); } catch (_) {} }
+    if (!msgs.length) { alert("This file is not a log I can read.\nExpected JSON or JSONL — see the README."); return; }
+    d = { messages: msgs };
+  }
+  const messages = (d.messages || d).map(m => ({
+    from: m.from ?? m.de ?? m.sender ?? "?",
+    to:   m.to   ?? m.vers ?? m.recipient ?? "?",
+    verb: (m.verb ?? m.etat ?? m.state ?? "ASK").toString().toUpperCase(),
+    subject: m.subject ?? m.sujet ?? m.text ?? "",
+    why: m.why ?? m.motif ?? m.reason ?? ""
+  })).filter(m => m.from !== "?" && m.to !== "?");
+  if (!messages.length) { alert("No message had both a sender and a recipient."); return; }
+  const agents = d.agents || [...new Set(messages.flatMap(m => [m.from, m.to]))];
+  data = { agents, messages }; step = -1; packets = [];
+  taille(); table(); avancer();
+}
+
+document.getElementById("file").onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  f.text().then(avaler);
+};
+const drop = document.getElementById("drop"), board = document.getElementById("board");
+board.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("show"); });
+board.addEventListener("dragleave", () => drop.classList.remove("show"));
+board.addEventListener("drop", e => {
+  e.preventDefault(); drop.classList.remove("show");
+  const f = e.dataTransfer.files[0]; if (f) f.text().then(avaler);
+});
+document.getElementById("play").onclick = e => {
+  playing = !playing; e.target.textContent = playing ? "Pause" : "Play";
+  e.target.classList.toggle("on", playing);
+};
+document.getElementById("step").onclick = () => { playing = false;
+  document.getElementById("play").textContent = "Play";
+  document.getElementById("play").classList.remove("on"); avancer(); };
+document.getElementById("reset").onclick = () => { data = DEMO; step = -1; taille(); table(); avancer(); };
+addEventListener("resize", taille);
+
+taille(); table(); avancer(); requestAnimationFrame(boucle);
+</script>
+</body>
+</html>

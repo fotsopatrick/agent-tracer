@@ -1,0 +1,16 @@
+{
+  "agents": ["planner", "coder", "reviewer", "tester"],
+  "messages": [
+    { "from": "planner",  "to": "coder",    "verb": "ASK",      "subject": "add a retry to the fetch call" },
+    { "from": "coder",    "to": "planner",  "verb": "READBACK", "subject": "understood: retry the fetch, three times, with a delay" },
+    { "from": "coder",    "to": "tester",   "verb": "ASK",      "subject": "cover the retry with a test" },
+    { "from": "tester",   "to": "coder",    "verb": "DONE",     "subject": "4 tests green, seen red before the fix" },
+    { "from": "coder",    "to": "reviewer", "verb": "ASK",      "subject": "review the patch" },
+    { "from": "reviewer", "to": "coder",    "verb": "REFUSE",   "subject": "the patch swallows the error",
+      "why": "A caught exception with an empty body hides the failure. Log it or re-raise it." },
+    { "from": "coder",    "to": "reviewer", "verb": "ASK",      "subject": "second review, the error is logged now" },
+    { "from": "reviewer", "to": "coder",    "verb": "DONE",     "subject": "approved" },
+    { "from": "coder",    "to": "planner",  "verb": "DUNNO",    "subject": "how long should the delay be?",
+      "why": "Two values are defensible and I will not guess. The service SLA would settle it." }
+  ]
+}
